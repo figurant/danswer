@@ -16,6 +16,7 @@ from sqlalchemy import func
 from sqlalchemy import Index
 from sqlalchemy import Integer
 from sqlalchemy import String
+from sqlalchemy import Uuid
 from sqlalchemy import Text
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import DeclarativeBase
@@ -411,3 +412,38 @@ class ChatMessage(Base):
     )
 
     chat_session: Mapped[ChatSession] = relationship("ChatSession")
+
+
+class OdsWxMsg(Base):
+    __tablename__ = "ods_wx_msg"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    sender_name: Mapped[str] = mapped_column(String)
+    send_time: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True)
+    )
+    msg_content: Mapped[str] = mapped_column(Text)
+    meta_info: Mapped[str] = mapped_column(Text)
+    time_created: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    time_updated: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class DwdWxDialog(Base):
+    __tablename__ = "dwd_wx_dialog"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    msg_id: Mapped[int] = mapped_column(ForeignKey("ods_wx_msg.id"))
+    msg_type: Mapped[str] = mapped_column(String)
+    dialog_uuid: Mapped[UUID] = mapped_column(Uuid)
+    dialog_type: Mapped[str] = mapped_column(String)
+    extra_info: Mapped[str] = mapped_column(Text)
+    time_created: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    time_updated: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )

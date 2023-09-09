@@ -36,10 +36,12 @@ from danswer.db.index_attempt import update_docs_indexed
 from danswer.db.models import Connector
 from danswer.db.models import IndexAttempt
 from danswer.db.models import IndexingStatus
+from danswer.db.ods_wx_msg import create_wx_msg
 from danswer.search.search_utils import warm_up_models
 from danswer.utils.logger import IndexAttemptSingleton
 from danswer.utils.logger import setup_logger
-
+from danswer.connectors.file.utils import get_file_ext
+import re
 logger = setup_logger()
 
 
@@ -312,6 +314,161 @@ def _run_indexing(
 
     _index(db_session, index_attempt, doc_batch_generator, run_time)
 
+def _run_wechat_indexing(
+    db_session: Session,
+    index_attempt: IndexAttempt,
+) -> None:
+    """
+    1. process the wechat log file to Postgres records
+    2. recognize the wechat logs to dialogs，and store the dialogs to Postgres
+    3. Embed and index every dialog into the chosen datastores (e.g. Qdrant / Typesense or Vespa)
+    4. Updates Postgres to record the indexed documents + the outcome of this run
+    """
+    def _one_msg(
+        db_session: Session, sender: str, send_time: str, content: str, meta_info: str
+    ) -> str:
+        msg = ""
+        if len(sender) != 0 and len(send_time) != 0 and len(content) != 0:
+            create_wx_msg(sender, send_time, content, meta_info, db_session)
+            msg = f"{sender}|{send_time}|{content}"
+        return msg
+
+    def _preprocess_msgs(
+        db_session: Session, attempt: IndexAttempt
+    ) -> str:
+
+        with open(attempt.connector.connector_specific_config[0], 'r', encoding='utf-8') as file:
+            lines = file.readlines()
+
+        msgs = ""
+        current_msg = ""
+        sender = ""
+        send_time = ""
+        content = ""
+
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+
+            match_obj = re.match(r'(.*) (\d{4}/\d{2}/\d{2} \d{2}:\d{2})', line)
+            if match_obj:
+                current_msg = _one_msg(db_session, sender, send_time, content, attempt.connector.connector_specific_config[0])
+                if len(current_msg) > 0:
+                    msgs.append(f"{current_msg}\n")
+
+                sender = match_obj.groups(1)
+                send_time = match_obj.groups(2)
+                content = ""
+            else:
+                content = content.append(f"，{line}")
+                content = content.replace("\n", "")
+
+        current_msg = _one_msg(db_session, sender, send_time, content, attempt.connector.connector_specific_config[0])
+        if len(current_msg) > 0:
+            msgs.append(f"{current_msg}\n")
+
+        return msgs
+
+    msgs = _preprocess_msgs(db_session, index_attempt)
+
+    def _analyze_msgs(
+        db_session: Session, attempt: IndexAttempt, msgs: str
+    ) -> list[str]:
+        dlgs_txt = []
+        dlgs = analyze_msg()
+
+
+        return dlgs_txt
+    def _index(
+        db_session: Session,
+        attempt: IndexAttempt,
+        doc_batch_generator: GenerateDocumentsOutput,
+        run_time: float,
+    ) -> None:
+        indexing_pipeline = build_indexing_pipeline()
+
+        run_dt = datetime.fromtimestamp(run_time, tz=timezone.utc)
+        db_connector = attempt.connector
+        db_credential = attempt.credential
+
+        update_connector_credential_pair(
+            db_session=db_session,
+            connector_id=db_connector.id,
+            credential_id=db_credential.id,
+            attempt_status=IndexingStatus.IN_PROGRESS,
+            run_dt=run_dt,
+        )
+
+        try:
+            net_doc_change = 0
+            document_count = 0
+            chunk_count = 0
+            for doc_batch in doc_batch_generator:
+                logger.debug(
+                    f"Indexing batch of documents: {[doc.to_short_descriptor() for doc in doc_batch]}"
+                )
+                index_user_id = (
+                    None if db_credential.public_doc else db_credential.user_id
+                )
+                new_docs, total_batch_chunks = indexing_pipeline(
+                    documents=doc_batch,
+                    index_attempt_metadata=IndexAttemptMetadata(
+                        user_id=index_user_id,
+                        connector_id=db_connector.id,
+                        credential_id=db_credential.id,
+                    ),
+                )
+                net_doc_change += new_docs
+                chunk_count += total_batch_chunks
+                document_count += len(doc_batch)
+                update_docs_indexed(
+                    db_session=db_session,
+                    index_attempt=attempt,
+                    num_docs_indexed=document_count,
+                )
+
+                # check if connector is disabled mid run and stop if so
+                db_session.refresh(db_connector)
+                if db_connector.disabled:
+                    # let the `except` block handle this
+                    raise RuntimeError("Connector was disabled mid run")
+
+            mark_attempt_succeeded(attempt, db_session)
+            update_connector_credential_pair(
+                db_session=db_session,
+                connector_id=db_connector.id,
+                credential_id=db_credential.id,
+                attempt_status=IndexingStatus.SUCCESS,
+                net_docs=net_doc_change,
+                run_dt=run_dt,
+            )
+
+            logger.info(
+                f"Indexed or updated {document_count} total documents for a total of {chunk_count} chunks"
+            )
+            logger.info(
+                f"Connector successfully finished, elapsed time: {time.time() - run_time} seconds"
+            )
+        except Exception as e:
+            logger.info(
+                f"Failed connector elapsed time: {time.time() - run_time} seconds"
+            )
+            mark_attempt_failed(attempt, db_session, failure_reason=str(e))
+            # The last attempt won't be marked failed until the next cycle's check for still in-progress attempts
+            # The connector_credential_pair is marked failed here though to reflect correctly in UI asap
+            update_connector_credential_pair(
+                db_session=db_session,
+                connector_id=attempt.connector.id,
+                credential_id=attempt.credential.id,
+                attempt_status=IndexingStatus.FAILED,
+                net_docs=net_doc_change,
+                run_dt=run_dt,
+            )
+            raise e
+
+    _index(db_session, index_attempt, doc_batch_generator, run_time)
+
 
 def _run_indexing_entrypoint(index_attempt_id: int) -> None:
     """Entrypoint for indexing run when using dask distributed.
@@ -343,10 +500,17 @@ def _run_indexing_entrypoint(index_attempt_id: int) -> None:
                 attempt_status=IndexingStatus.IN_PROGRESS,
             )
 
-            _run_indexing(
-                db_session=db_session,
-                index_attempt=attempt,
-            )
+            extension = get_file_ext(attempt.connector.connector_specific_config[0])
+            if extension == "wx":
+                _run_wechat_indexing(
+                    db_session=db_session,
+                    index_attempt=attempt,
+                )
+            else:
+                _run_indexing(
+                    db_session=db_session,
+                    index_attempt=attempt,
+                )
 
             logger.info(
                 f"Completed indexing attempt for connector: '{attempt.connector.name}', "
