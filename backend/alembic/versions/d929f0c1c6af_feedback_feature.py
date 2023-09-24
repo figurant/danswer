@@ -79,9 +79,9 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id"),
     )
-    op.add_column("document", sa.Column("boost", sa.Integer(), nullable=False))
-    op.add_column("document", sa.Column("hidden", sa.Boolean(), nullable=False))
-    op.add_column("document", sa.Column("semantic_id", sa.String(), nullable=False))
+    op.add_column("document", sa.Column("boost", sa.Integer(), nullable=True))
+    op.add_column("document", sa.Column("hidden", sa.Boolean(), nullable=True))
+    op.add_column("document", sa.Column("semantic_id", sa.String(), nullable=True))
     op.add_column("document", sa.Column("link", sa.String(), nullable=True))
 
 

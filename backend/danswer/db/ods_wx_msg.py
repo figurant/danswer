@@ -15,13 +15,14 @@ from danswer.utils.logger import setup_logger
 
 logger = setup_logger()
 
+
 def create_wx_msg(
     sender_name: str,
     send_time: datetime.datetime,
     msg_content: str,
     meta_info: str,
     db_session: Session,
-) -> int:
+) -> OdsWxMsg:
     wx_msg = OdsWxMsg(
         sender_name=sender_name,
         send_time=send_time,
@@ -31,4 +32,13 @@ def create_wx_msg(
     db_session.add(wx_msg)
     db_session.commit()
 
-    return wx_msg.id
+    return wx_msg
+
+
+def get_wx_msg(
+    msg_id: int,
+    db_session: Session
+) -> OdsWxMsg | None:
+    stmt = select(OdsWxMsg)
+    stmt = stmt.where(OdsWxMsg.id == msg_id)
+    return db_session.execute(stmt).scalars().first()

@@ -90,3 +90,6 @@ API_TYPE_OPENAI = os.environ.get("API_TYPE_OPENAI", "").lower()
 API_VERSION_OPENAI = os.environ.get("API_VERSION_OPENAI", "")
 # Deployment ID used interchangeably with "engine" parameter
 AZURE_DEPLOYMENT_ID = os.environ.get("AZURE_DEPLOYMENT_ID", "")
+
+MAX_WECHAT_MESSAGE_LENGTH = 500
+MAX_WECHAT_CONTEXT = 2000

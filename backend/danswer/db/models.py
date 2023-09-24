@@ -431,6 +431,9 @@ class OdsWxMsg(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
+    def get_msg_txt(self):
+        return f"{self.id}|{self.sender_name}|{self.send_time}|{self.msg_content}"
+
 
 class DwdWxDialog(Base):
     __tablename__ = "dwd_wx_dialog"

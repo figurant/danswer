@@ -36,6 +36,12 @@ export const getSourceMetadata = (sourceType: ValidSources): SourceMetadata => {
         displayName: "File",
         adminPageLink: "/admin/connectors/file",
       };
+    case "wechat":
+      return {
+        icon: FileIcon,
+        displayName: "File",
+        adminPageLink: "/admin/connectors/file",
+      };
     case "slack":
       return {
         icon: SlackIcon,
@@ -109,7 +115,7 @@ export const getSourceMetadata = (sourceType: ValidSources): SourceMetadata => {
         adminPageLink: "/admin/connectors/linear",
       };
     default:
-      throw new Error("Invalid source type");
+      throw new Error("Invalid source type : " + sourceType);
   }
 };
 
