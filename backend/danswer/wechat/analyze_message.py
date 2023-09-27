@@ -7,7 +7,7 @@ from datetime import timezone
 
 from sqlalchemy.orm import Session
 
-from danswer.configs.app_configs import INDEX_BATCH_SIZE
+from danswer.configs.app_configs import INDEX_BATCH_SIZE, LOG_FILE_STORAGE
 from danswer.configs.constants import DocumentSource
 from danswer.configs.model_configs import MAX_WECHAT_MESSAGE_LENGTH, MAX_WECHAT_CONTEXT
 from danswer.connectors.interfaces import GenerateDocumentsOutput
@@ -25,11 +25,12 @@ from danswer.db.models import OdsWxMsg
 from danswer.db.ods_wx_msg import create_wx_msg, get_wx_msg
 from danswer.utils.logger import setup_logger
 from danswer.wechat.dialog import Dialog, Message
+from danswer.wechat.file_logger import FileLogger
 from danswer.wechat.prompts import get_ana_wx_prompt, MESSAGE_TYPE_EXPERT_ANSWER
 from danswer.wechat.wechat_openai import get_completion, get_completion_mock
 
 logger = setup_logger()
-
+update_logger = FileLogger(f'{LOG_FILE_STORAGE}/update.log', level='debug')
 
 def preprocess_msgs(
     db_session: Session, attempt: IndexAttempt
@@ -172,9 +173,32 @@ def get_dialogs(
 
         return valid_dlgs, pending_dlgs
 
-    dialogs = []
+    def _process_pending_dlgs(pending_dlgs: list) -> (str, list[Dialog]):
+        _msgs_txt = ""
+        dlgs = []
+        idx = len(pending_dlgs) - 1
+        while idx >= 0:
+            d = pending_dlgs[idx]
+            dlg_txt = ""
+            for m in d.messages:
+                dlg_txt += f"{m.get_msg_txt()}\n"
+            if len(dlg_txt + _msgs_txt) > MAX_WECHAT_CONTEXT / 2:
+                logger.warning(
+                    f"pending wechat messages exceed max length {len(dlg_txt + _msgs_txt)} > {MAX_WECHAT_CONTEXT}/2:{_msgs_txt}")
+                break
+            _msgs_txt = dlg_txt + _msgs_txt
+            idx -= 1
+
+        if idx >= 0:
+            dlgs = pending_dlgs[0: idx+1]
+
+        return _msgs_txt, dlgs
+
+    dialogs_answered = []
+    dialogs_not_answered = []
     msgs_txt = ""
     finished = True
+    openai_count = 0
     for msg in msgs:
         msg_txt = msg.get_msg_txt()
         if len(msg_txt) > MAX_WECHAT_MESSAGE_LENGTH:
@@ -187,26 +211,32 @@ def get_dialogs(
             finished = False
         else:
             finished = True
-            dialogs_txt = get_completion(get_ana_wx_prompt(msgs_txt), "gpt-3.5-turbo")
-            valid_dlgs, pending_dlgs = _exract_dialogs(dialogs_txt, db_session)
-            dialogs += valid_dlgs
-            msgs_txt = ""
-            for d in pending_dlgs:
-                for m in d.messages:
-                    msgs_txt += f"{m.get_msg_txt()}\n"
-            if len(msgs_txt) > MAX_WECHAT_CONTEXT/2:
-                logger.warning(
-                    f"pending wechat messages exceed max length {len(msgs_txt)} > {MAX_WECHAT_CONTEXT}/2:{msgs_txt}")
+            openai_count += 1
+            if openai_count > 100:
+                logger.warning(f"openai_count > 100")
                 break
+            dialogs_txt = get_completion(get_ana_wx_prompt(msgs_txt), "gpt-3.5-turbo")
+            update_logger.logger.debug(
+                f'get_completion prompt:\n{get_ana_wx_prompt(msgs_txt)}\n result:\n{dialogs_txt}\n')
+            valid_dlgs, pending_dlgs = _exract_dialogs(dialogs_txt, db_session)
+            dialogs_answered += valid_dlgs
+            msgs_txt, pending_dlgs = _process_pending_dlgs(pending_dlgs)
+            dialogs_not_answered += pending_dlgs
+
     if not finished:
         dialogs_txt = get_completion(get_ana_wx_prompt(msgs_txt), "gpt-3.5-turbo")
+        update_logger.logger.debug(
+            f'get_completion prompt:\n{get_ana_wx_prompt(msgs_txt)}\n result:\n{dialogs_txt}\n')
         valid_dlgs, pending_dlgs = _exract_dialogs(dialogs_txt, db_session)
-        dialogs += valid_dlgs
-        for d in pending_dlgs:
-            logger.info(f"this is a pending dialog {d.uuid}")
-            d.commit_dwd_wx_dialog(db_session)
+        dialogs_answered += valid_dlgs
+        dialogs_not_answered += pending_dlgs
 
-    return dialogs
+    for d in dialogs_not_answered:
+        logger.info(f"this is a pending dialog {d.uuid}")
+        d.commit_dwd_wx_dialog(db_session)
+
+    logger.info(f"successfully get {len(dialogs_answered)} answered dialogs ")
+    return dialogs_answered
 
 
 def index(
@@ -301,8 +331,8 @@ def run_wechat_indexing(
     db_session: Session,
     index_attempt: IndexAttempt,
 ) -> None:
-    # msgs = preprocess_msgs(db_session, index_attempt)
-    # dialogs = get_dialogs(db_session, msgs)
-    dialogs = get_dialogs_mock(db_session)
+    msgs = preprocess_msgs(db_session, index_attempt)
+    dialogs = get_dialogs(db_session, msgs)
+    # dialogs = get_dialogs_mock(db_session)
     wx_batch_generator = load_from_dialogs(index_attempt, dialogs)
     index(db_session, index_attempt, wx_batch_generator, time.time())

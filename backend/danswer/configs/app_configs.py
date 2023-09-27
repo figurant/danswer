@@ -220,3 +220,7 @@ DANSWER_BOT_DISPLAY_ERROR_MSGS = os.environ.get(
 DANSWER_BOT_DISABLE_DOCS_ONLY_ANSWER = os.environ.get(
     "DANSWER_BOT_DISABLE_DOCS_ONLY_ANSWER", ""
 ).lower() not in ["false", ""]
+
+LOG_FILE_STORAGE = os.environ.get(
+    "LOG_FILE_STORAGE", "/home/logs"
+)
