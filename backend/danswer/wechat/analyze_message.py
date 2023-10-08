@@ -23,14 +23,15 @@ from danswer.db.models import IndexAttempt
 from danswer.db.models import IndexingStatus
 from danswer.db.models import OdsWxMsg
 from danswer.db.ods_wx_msg import create_wx_msg, get_wx_msg
-from danswer.utils.logger import setup_logger
 from danswer.wechat.dialog import Dialog, Message
 from danswer.wechat.file_logger import FileLogger
-from danswer.wechat.prompts import get_ana_wx_prompt, MESSAGE_TYPE_EXPERT_ANSWER
+from danswer.wechat.prompts import get_ana_wx_prompt, MESSAGE_TYPE_EXPERT_ANSWER, MESSAGE_TYPE_USER_QUESTION, \
+    MESSAGE_TYPE_USER_ANSWER, MESSAGE_TYPE_EXPERT_QUESTION
 from danswer.wechat.wechat_openai import get_completion, get_completion_mock
 
-logger = setup_logger()
 update_logger = FileLogger(f'{LOG_FILE_STORAGE}/update.log', level='debug')
+logger = update_logger.logger
+
 
 def preprocess_msgs(
     db_session: Session, attempt: IndexAttempt
@@ -135,9 +136,8 @@ def get_dialogs_mock(
     return valid_dlgs
 
 
-
 def get_dialogs(
-        db_session: Session, msgs: list[OdsWxMsg]
+        db_session: Session, msgs: list[OdsWxMsg], index_attempt: IndexAttempt
 ) -> list[Dialog]:
     def _exract_dialogs(raw_dialogs_txt: str, db_session: Session) -> (list[Dialog], list[Dialog]):
         pending_dlgs = []  # 有提问，待回答的对话消息，需要进行下一轮处理
@@ -200,6 +200,8 @@ def get_dialogs(
     finished = True
     openai_count = 0
     for msg in msgs:
+        if msg.msg_content == "[图片]":
+            continue
         msg_txt = msg.get_msg_txt()
         if len(msg_txt) > MAX_WECHAT_MESSAGE_LENGTH:
             logger.warning(
@@ -212,11 +214,11 @@ def get_dialogs(
         else:
             finished = True
             openai_count += 1
-            if openai_count > 100:
-                logger.warning(f"openai_count > 100")
+            if openai_count > 500:
+                logger.warning(f"openai_count > 500")
                 break
             dialogs_txt = get_completion(get_ana_wx_prompt(msgs_txt), "gpt-3.5-turbo")
-            update_logger.logger.debug(
+            logger.debug(
                 f'get_completion prompt:\n{get_ana_wx_prompt(msgs_txt)}\n result:\n{dialogs_txt}\n')
             valid_dlgs, pending_dlgs = _exract_dialogs(dialogs_txt, db_session)
             dialogs_answered += valid_dlgs
@@ -224,8 +226,9 @@ def get_dialogs(
             dialogs_not_answered += pending_dlgs
 
     if not finished:
+        openai_count += 1
         dialogs_txt = get_completion(get_ana_wx_prompt(msgs_txt), "gpt-3.5-turbo")
-        update_logger.logger.debug(
+        logger.debug(
             f'get_completion prompt:\n{get_ana_wx_prompt(msgs_txt)}\n result:\n{dialogs_txt}\n')
         valid_dlgs, pending_dlgs = _exract_dialogs(dialogs_txt, db_session)
         dialogs_answered += valid_dlgs
@@ -235,8 +238,65 @@ def get_dialogs(
         logger.info(f"this is a pending dialog {d.uuid}")
         d.commit_dwd_wx_dialog(db_session)
 
-    logger.info(f"successfully get {len(dialogs_answered)} answered dialogs ")
+    # log stats
+    msg_count = len(msgs)
+    dlg_count = len(dialogs_not_answered) + len(dialogs_answered)
+    dlg_answered_count = len(dialogs_answered)
+    dlg_msg_count = 0
+    m1 = 0
+    m2 = 0
+    m3 = 0
+    m4 = 0
+    for d in dialogs_not_answered:
+        for m in d.messages:
+            dlg_msg_count += 1
+            if int(m.type) == MESSAGE_TYPE_USER_QUESTION:
+                m1 += 1
+            if int(m.type) == MESSAGE_TYPE_USER_ANSWER:
+                m2 += 1
+            if int(m.type) == MESSAGE_TYPE_EXPERT_QUESTION:
+                m3 += 1
+            if int(m.type) == MESSAGE_TYPE_EXPERT_ANSWER:
+                m4 += 1
+    for d in dialogs_answered:
+        for m in d.messages:
+            dlg_msg_count += 1
+            if int(m.type) == MESSAGE_TYPE_USER_QUESTION:
+                m1 += 1
+            if int(m.type) == MESSAGE_TYPE_USER_ANSWER:
+                m2 += 1
+            if int(m.type) == MESSAGE_TYPE_EXPERT_QUESTION:
+                m3 += 1
+            if int(m.type) == MESSAGE_TYPE_EXPERT_ANSWER:
+                m4 += 1
+
+    logger.info(f"successfully get dialogs from file"
+                f"{index_attempt.connector.connector_specific_config['file_locations'][0]}\n"
+                f"used openai api count {openai_count}, \n"
+                f"messages count {msg_count}, \n"
+                f"dlg_count {dlg_count},\n"
+                f"dlg_answered_count {dlg_answered_count},\n"
+                f"dlg_msg_count {dlg_msg_count},\n"
+                f"USER_QUESTION {m1},\n"
+                f"USER_ANSWER {m2},\n"
+                f"EXPERT_QUESTION {m3},\n"
+                f"EXPERT_ANSWER {m4}\n")
     return dialogs_answered
+
+
+def get_msgs_txt_tmp(
+        msgs: list[OdsWxMsg]
+):
+    msgs_txt = ""
+    for msg in msgs:
+        if msg.msg_content == "[图片]":
+            continue
+        msg_txt = msg.get_msg_txt()
+        msgs_txt += f"{msg_txt}\n"
+
+    logger.debug(
+        f'get msgs_txt prompt:\n{get_ana_wx_prompt(msgs_txt)}\n')
+    return msgs_txt
 
 
 def index(
@@ -332,7 +392,9 @@ def run_wechat_indexing(
     index_attempt: IndexAttempt,
 ) -> None:
     msgs = preprocess_msgs(db_session, index_attempt)
-    dialogs = get_dialogs(db_session, msgs)
+    # msgs_txt = get_msgs_txt_tmp(msgs)
+
+    dialogs = get_dialogs(db_session, msgs, index_attempt)
     # dialogs = get_dialogs_mock(db_session)
     wx_batch_generator = load_from_dialogs(index_attempt, dialogs)
     index(db_session, index_attempt, wx_batch_generator, time.time())
