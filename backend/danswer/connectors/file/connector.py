@@ -41,6 +41,9 @@ def _open_files_at_location(
     elif extension == ".txt":
         with open(file_path, "r") as file:
             yield os.path.basename(file_path), file
+    elif extension == ".md":
+        with open(file_path, "r") as file:
+            yield os.path.basename(file_path), file
     else:
         logger.warning(f"Skipping file '{file_path}' with extension '{extension}'")
 

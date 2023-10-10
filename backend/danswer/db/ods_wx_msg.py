@@ -9,7 +9,9 @@ from sqlalchemy import or_
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from danswer.db.models import OdsWxMsg
+from danswer.connectors.file.utils import get_file_ext
+from danswer.db.dwd_wx_dialog import delete_dwd_wx_dialog_by_meta
+from danswer.db.models import OdsWxMsg, Connector
 from danswer.utils.logger import setup_logger
 
 
@@ -42,3 +44,27 @@ def get_wx_msg(
     stmt = select(OdsWxMsg)
     stmt = stmt.where(OdsWxMsg.id == msg_id)
     return db_session.execute(stmt).scalars().first()
+
+
+def delete_wx_msg_by_conn_id(
+    connector_id: int,
+    db_session: Session,
+) -> None:
+    stmt = select(Connector).where(
+        Connector.id == connector_id
+    )
+    connector = db_session.execute(stmt).scalars().first()
+
+    extension = ""
+    file_locations = connector.connector_specific_config['file_locations']
+    if len(file_locations) > 0:
+        extension = get_file_ext(file_locations[0])
+    if extension == ".wx":
+        delete_dwd_wx_dialog_by_meta(
+            file_locations[0],
+            db_session
+        )
+        stmt = delete(OdsWxMsg).where(
+            OdsWxMsg.meta_info == file_locations[0]
+        )
+        db_session.execute(stmt)

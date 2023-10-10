@@ -38,9 +38,10 @@ from danswer.db.document import (
 )
 from danswer.db.engine import get_sqlalchemy_engine
 from danswer.db.index_attempt import delete_index_attempts
-from danswer.db.models import Credential
+from danswer.db.models import Credential, Connector
 from danswer.db.models import DeletionAttempt
 from danswer.db.models import DeletionStatus
+from danswer.db.ods_wx_msg import delete_wx_msg_by_conn_id
 from danswer.utils.logger import setup_logger
 
 logger = setup_logger()
@@ -157,6 +158,10 @@ def _delete_connector_credential_pair(
         # TODO: lock anything to do with this connector via transaction isolation
         # NOTE: we have to delete index_attempts and deletion_attempts since they both
         # have foreign key columns to the connector
+        delete_wx_msg_by_conn_id(
+            db_session=db_session,
+            connector_id=connector_id
+        )
         delete_index_attempts(
             db_session=db_session,
             connector_id=connector_id,

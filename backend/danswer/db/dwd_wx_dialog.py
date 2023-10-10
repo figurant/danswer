@@ -1,19 +1,12 @@
-from collections.abc import Sequence
-import datetime
 from typing import List
+from uuid import UUID
 
-from sqlalchemy import and_
-from sqlalchemy import ColumnElement
 from sqlalchemy import delete
-from sqlalchemy import desc
-from sqlalchemy import func
-from sqlalchemy import or_
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from danswer.db.models import DwdWxDialog
+from danswer.db.models import DwdWxDialog, OdsWxMsg
 from danswer.utils.logger import setup_logger
-from uuid import UUID
 
 logger = setup_logger()
 
@@ -44,3 +37,21 @@ def get_dwd_wx_dialog_all(
 ) -> List[DwdWxDialog] | None:
     stmt = select(DwdWxDialog)
     return db_session.execute(stmt).scalars()
+
+
+def delete_dwd_wx_dialog_by_meta(
+    meta_info: str,
+    db_session: Session,
+) -> None:
+    stmt = select(OdsWxMsg).where(
+        OdsWxMsg.meta_info == meta_info
+    )
+    msgs = db_session.execute(stmt).scalars()
+    msg_ids = []
+    for msg in msgs:
+        msg_ids.append(msg.id)
+    stmt = delete(DwdWxDialog).where(
+        DwdWxDialog.msg_id.in_(msg_ids)
+    )
+    db_session.execute(stmt)
+
