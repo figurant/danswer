@@ -27,7 +27,7 @@ from danswer.wechat.dialog import Dialog, Message
 from danswer.wechat.file_logger import FileLogger
 from danswer.wechat.prompts import get_ana_wx_prompt, MESSAGE_TYPE_EXPERT_ANSWER, MESSAGE_TYPE_USER_QUESTION, \
     MESSAGE_TYPE_USER_ANSWER, MESSAGE_TYPE_EXPERT_QUESTION
-from danswer.wechat.wechat_openai import get_completion, get_completion_mock
+from danswer.wechat.wechat_openai import try_get_completion
 
 update_logger = FileLogger(f'{LOG_FILE_STORAGE}/update.log', level='debug')
 logger = update_logger.logger
@@ -217,7 +217,7 @@ def get_dialogs(
             if openai_count > 500:
                 logger.warning(f"openai_count > 500")
                 break
-            dialogs_txt = get_completion(get_ana_wx_prompt(msgs_txt), "gpt-3.5-turbo")
+            dialogs_txt = try_get_completion(get_ana_wx_prompt(msgs_txt), "gpt-3.5-turbo")
             logger.debug(
                 f'get_completion prompt:\n{get_ana_wx_prompt(msgs_txt)}\n result:\n{dialogs_txt}\n')
             valid_dlgs, pending_dlgs = _exract_dialogs(dialogs_txt, db_session)
@@ -227,7 +227,7 @@ def get_dialogs(
 
     if not finished:
         openai_count += 1
-        dialogs_txt = get_completion(get_ana_wx_prompt(msgs_txt), "gpt-3.5-turbo")
+        dialogs_txt = try_get_completion(get_ana_wx_prompt(msgs_txt), "gpt-3.5-turbo")
         logger.debug(
             f'get_completion prompt:\n{get_ana_wx_prompt(msgs_txt)}\n result:\n{dialogs_txt}\n')
         valid_dlgs, pending_dlgs = _exract_dialogs(dialogs_txt, db_session)

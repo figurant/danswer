@@ -4,9 +4,37 @@ from danswer.configs.app_configs import LOG_FILE_STORAGE
 from danswer.configs.model_configs import GEN_AI_API_KEY
 from danswer.wechat.file_logger import FileLogger
 from danswer.wechat.prompts import get_ana_wx_prompt2, get_ana_wx_prompt
+import threading
+import time
+
+# 创建一个锁
+lock = threading.Lock()
+# 设置最大重试次数
+MAX_RETRIES = 3
 
 openai.api_key = GEN_AI_API_KEY
 update_logger = FileLogger(f'{LOG_FILE_STORAGE}/openai.log', level='debug')
+
+
+def try_get_completion(prompt, model="gpt-3.5-turbo"):
+    result = ""
+    global lock
+    with lock:
+        retries = 0
+        while retries < MAX_RETRIES:
+            try:
+                result = get_completion(prompt, model)
+                break
+            except Exception as e:
+                retries += 1
+                print(f"Exception occurred in openai get_completion: {e}")
+                if retries < MAX_RETRIES:
+                    print("Sleeping for 5 seconds before retrying...")
+                    time.sleep(5)
+                else:
+                    raise
+    return result
+
 
 def get_completion(prompt, model="gpt-3.5-turbo"):
     messages = [{"role": "user", "content": prompt}]
@@ -266,10 +294,3 @@ if __name__ == "__main__":
     update_logger.logger.debug(
         f'model: {model} get_completion prompt:\n{prompt}\n result:\n{res}\n')
     print(res)
-
-
-
-"""
-openai.error.InvalidRequestError: This model's maximum context length is 4097 tokens. 
-However, your messages resulted in 7468 tokens. Please reduce the length of the messages.
-"""
