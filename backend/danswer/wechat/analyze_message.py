@@ -144,6 +144,7 @@ def get_dialogs(
         valid_dlgs = []
         dlgs_map = {}  # id->dialog的map
         for line in raw_dialogs_txt.splitlines():
+            line = line.replace(" ", "")
             match_obj = re.match(r'(\d+)\|(\d+)\|(\d+)', line)
             if match_obj:
                 msg_id = int(match_obj.group(1).strip())
