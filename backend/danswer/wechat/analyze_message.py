@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from danswer.configs.app_configs import INDEX_BATCH_SIZE, LOG_FILE_STORAGE
 from danswer.configs.constants import DocumentSource
-from danswer.configs.model_configs import MAX_WECHAT_MESSAGE_LENGTH, MAX_WECHAT_CONTEXT
+from danswer.configs.model_configs import MAX_WECHAT_MESSAGE_LENGTH, MAX_WECHAT_CONTEXT, WECHAT_ANA_MODEL
 from danswer.connectors.interfaces import GenerateDocumentsOutput
 from danswer.connectors.models import Document, Section
 from danswer.connectors.models import IndexAttemptMetadata
@@ -217,7 +217,7 @@ def get_dialogs(
             if openai_count > 500:
                 logger.warning(f"openai_count > 500")
                 break
-            dialogs_txt = try_get_completion(get_ana_wx_prompt(msgs_txt), "gpt-3.5-turbo")
+            dialogs_txt = try_get_completion(get_ana_wx_prompt(msgs_txt), WECHAT_ANA_MODEL)
             logger.debug(
                 f'get_completion prompt:\n{get_ana_wx_prompt(msgs_txt)}\n result:\n{dialogs_txt}\n')
             valid_dlgs, pending_dlgs = _exract_dialogs(dialogs_txt, db_session)
@@ -227,7 +227,7 @@ def get_dialogs(
 
     if not finished:
         openai_count += 1
-        dialogs_txt = try_get_completion(get_ana_wx_prompt(msgs_txt), "gpt-3.5-turbo")
+        dialogs_txt = try_get_completion(get_ana_wx_prompt(msgs_txt), WECHAT_ANA_MODEL)
         logger.debug(
             f'get_completion prompt:\n{get_ana_wx_prompt(msgs_txt)}\n result:\n{dialogs_txt}\n')
         valid_dlgs, pending_dlgs = _exract_dialogs(dialogs_txt, db_session)
