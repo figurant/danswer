@@ -54,4 +54,5 @@ def delete_dwd_wx_dialog_by_meta(
         DwdWxDialog.msg_id.in_(msg_ids)
     )
     db_session.execute(stmt)
+    db_session.commit()
 

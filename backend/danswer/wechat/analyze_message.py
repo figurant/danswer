@@ -9,13 +9,15 @@ from sqlalchemy.orm import Session
 
 from danswer.configs.app_configs import INDEX_BATCH_SIZE, LOG_FILE_STORAGE
 from danswer.configs.constants import DocumentSource
-from danswer.configs.model_configs import MAX_WECHAT_MESSAGE_LENGTH, MAX_WECHAT_CONTEXT, WECHAT_ANA_MODEL
+from danswer.configs.model_configs import MAX_WECHAT_MESSAGE_LENGTH, MAX_WECHAT_CONTEXT, WECHAT_ANA_MODEL, \
+    MAX_OPENAI_COUNT_PER_FILE
 from danswer.connectors.interfaces import GenerateDocumentsOutput
 from danswer.connectors.models import Document, Section
 from danswer.connectors.models import IndexAttemptMetadata
 from danswer.datastores.indexing_pipeline import build_indexing_pipeline
 from danswer.db.connector_credential_pair import update_connector_credential_pair
 from danswer.db.dwd_wx_dialog import get_dwd_wx_dialog_all
+from danswer.db.engine import get_sqlalchemy_engine
 from danswer.db.index_attempt import mark_attempt_failed
 from danswer.db.index_attempt import mark_attempt_succeeded
 from danswer.db.index_attempt import update_docs_indexed
@@ -27,14 +29,14 @@ from danswer.wechat.dialog import Dialog, Message
 from danswer.wechat.file_logger import FileLogger
 from danswer.wechat.prompts import get_ana_wx_prompt, MESSAGE_TYPE_EXPERT_ANSWER, MESSAGE_TYPE_USER_QUESTION, \
     MESSAGE_TYPE_USER_ANSWER, MESSAGE_TYPE_EXPERT_QUESTION
-from danswer.wechat.wechat_openai import try_get_completion
+from danswer.wechat.wechat_openai import try_get_completion, get_dlgwithtype_from_llm, get_faq_from_llm
 
 update_logger = FileLogger(f'{LOG_FILE_STORAGE}/update.log', level='debug')
 logger = update_logger.logger
 
 
 def preprocess_msgs(
-    db_session: Session, attempt: IndexAttempt
+        db_session: Session, attempt: IndexAttempt
 ) -> list[OdsWxMsg]:
     def _one_msg(
             db_session: Session, sender: str, send_time: str, content: str, meta_info: str
@@ -84,8 +86,8 @@ def preprocess_msgs(
 
 
 def load_from_dialogs(
-    attempt: IndexAttempt,
-    dialogs: Dialog
+        attempt: IndexAttempt,
+        dialogs: Dialog
 ) -> GenerateDocumentsOutput:
     documents: list[Document] = []
     file_name = attempt.connector.connector_specific_config['file_locations'][0]
@@ -136,44 +138,95 @@ def get_dialogs_mock(
     return valid_dlgs
 
 
+# 处理LLM的得到文本，格式如下：
+# ### 任务一输出：
+#
+# ```
+# 消息id|消息类型|咨询记录id
+# 3664|1|1
+# 3665|0|0
+# ```
+# ### ###
+#
+# ### 任务二输出：
+# ```
+# 咨询记录id|问题大类|二级分类|版本|问题详情|答案|分类理由
+# 1|3|6|NULL|创建分区失败，权限问题，fe启动不了|这看起来是你启动Doris的时候对这个目录的赋权问题呀|专家回复指出是权限问题，属于功能缺陷
+# 2|3|4|2.0|自定义Udf函数bug|私聊细嗦|专家回复提到bug，属于兼容性问题
+# ```
+def extract_dialogs(raw_dialogs_txt: str, db_session: Session) -> (list[Dialog], list[Dialog]):
+    pending_dlgs = []  # 有提问，待回答的对话消息，需要进行下一轮处理
+    valid_dlgs = []
+    dlgs_map = {}  # dialog_id->Dialog的map
+    lines = raw_dialogs_txt.splitlines()
+    tag_task1 = False
+    lines_cursor = 0
+
+    # 处理task1的输出：
+    # 消息id|消息类型|咨询记录id
+    # 3664|1|1
+    # 3665|0|0
+    for i, line in enumerate(lines):
+        line = line.replace(" ", "")
+        match_obj = re.match(r'^###.*', line)
+        if match_obj and tag_task1:
+            lines_cursor = i + 1
+            break
+        match_obj = re.match(r'(\d+)\|(\d+)\|(\d+)', line)
+        if match_obj:
+            tag_task1 = True
+            msg_id = int(match_obj.group(1).strip())
+            msg_type = int(match_obj.group(2).strip())
+            dialog_id = int(match_obj.group(3).strip())
+            if msg_id > 0 and 0 < msg_type < 5 and dialog_id > 0:
+                ods_wx_msg = get_wx_msg(msg_id, db_session)
+                message = Message(msg_id,
+                                  ods_wx_msg.sender_name,
+                                  ods_wx_msg.send_time,
+                                  ods_wx_msg.msg_content,
+                                  msg_type
+                                  )
+                if dialog_id in dlgs_map:
+                    dlgs_map[dialog_id].add_message(message)
+                    if msg_type == MESSAGE_TYPE_EXPERT_ANSWER:
+                        dlgs_map[dialog_id].set_has_answer()
+                else:
+                    dialog = Dialog(uuid.uuid1(), [message])
+                    dlgs_map[dialog_id] = dialog
+
+    # 处理task2的输出：
+    # 咨询记录id|问题大类|二级分类|版本|问题详情|答案|分类理由
+    # 1|3|6|NULL|创建分区失败，权限问题，fe启动不了|这看起来是你启动Doris的时候对这个目录的赋权问题呀|专家回复指出是权限问题，属于功能缺陷
+    # 2|3|4|2.0|自定义Udf函数bug|私聊细嗦|专家回复提到bug，属于兼容性问题
+    for i in range(lines_cursor, len(lines) + 1):
+        line = lines[i - 1]
+        line = line.replace(" ", "")
+        match_obj = re.match(r'(\d+)\|(\d+)\|(\d+)\|([^|]+)\|([^|]+)\|([^|]+)\|([^|]+)', line)
+        if match_obj:
+            dialog_id = int(match_obj.group(1).strip())
+            dialog_category = int(match_obj.group(2).strip())
+            dialog_type = int(match_obj.group(3).strip())
+            version = match_obj.group(4).strip()
+            question = match_obj.group(5).strip()
+            answer = match_obj.group(6).strip()
+            type_reason = match_obj.group(7).strip()
+            if dialog_id in dlgs_map:
+                dlgs_map[dialog_id].add_extend_info(
+                    dialog_category, dialog_type, version, question, answer, type_reason)
+
+    for d in dlgs_map.values():
+        if d.has_answer:
+            valid_dlgs.append(d)
+            d.commit_dialog(db_session)
+        else:
+            pending_dlgs.append(d)
+
+    return valid_dlgs, pending_dlgs
+
+
 def get_dialogs(
         db_session: Session, msgs: list[OdsWxMsg], index_attempt: IndexAttempt
 ) -> list[Dialog]:
-    def _exract_dialogs(raw_dialogs_txt: str, db_session: Session) -> (list[Dialog], list[Dialog]):
-        pending_dlgs = []  # 有提问，待回答的对话消息，需要进行下一轮处理
-        valid_dlgs = []
-        dlgs_map = {}  # id->dialog的map
-        for line in raw_dialogs_txt.splitlines():
-            line = line.replace(" ", "")
-            match_obj = re.match(r'(\d+)\|(\d+)\|(\d+)', line)
-            if match_obj:
-                msg_id = int(match_obj.group(1).strip())
-                msg_type = int(match_obj.group(2).strip())
-                dialog_id = int(match_obj.group(3).strip())
-                if msg_id > 0 and 0 < msg_type < 5 and dialog_id > 0:
-                    ods_wx_msg = get_wx_msg(msg_id, db_session)
-                    message = Message(msg_id,
-                                      ods_wx_msg.sender_name,
-                                      ods_wx_msg.send_time,
-                                      ods_wx_msg.msg_content,
-                                      msg_type
-                                      )
-                    if dialog_id in dlgs_map:
-                        dlgs_map[dialog_id].add_message(message)
-                        if msg_type == MESSAGE_TYPE_EXPERT_ANSWER:
-                            dlgs_map[dialog_id].set_has_answer()
-                    else:
-                        dialog = Dialog(uuid.uuid1(), [message])
-                        dlgs_map[dialog_id] = dialog
-        for d in dlgs_map.values():
-            if d.has_answer:
-                valid_dlgs.append(d)
-                d.commit_dwd_wx_dialog(db_session)
-            else:
-                pending_dlgs.append(d)
-
-        return valid_dlgs, pending_dlgs
-
     def _process_pending_dlgs(pending_dlgs: list) -> (str, list[Dialog]):
         _msgs_txt = ""
         dlgs = []
@@ -191,7 +244,7 @@ def get_dialogs(
             idx -= 1
 
         if idx >= 0:
-            dlgs = pending_dlgs[0: idx+1]
+            dlgs = pending_dlgs[0: idx + 1]
 
         return _msgs_txt, dlgs
 
@@ -215,29 +268,33 @@ def get_dialogs(
         else:
             finished = True
             openai_count += 1
-            if openai_count > 500:
-                logger.warning(f"openai_count > 500")
+            if openai_count > MAX_OPENAI_COUNT_PER_FILE:
+                logger.warning(f"openai_count > {MAX_OPENAI_COUNT_PER_FILE}")
                 break
-            dialogs_txt = try_get_completion(get_ana_wx_prompt(msgs_txt), WECHAT_ANA_MODEL)
-            logger.debug(
-                f'get_completion prompt:\n{get_ana_wx_prompt(msgs_txt)}\n result:\n{dialogs_txt}\n')
-            valid_dlgs, pending_dlgs = _exract_dialogs(dialogs_txt, db_session)
+            dialogs_txt = get_dlgwithtype_from_llm(msgs_txt, WECHAT_ANA_MODEL)
+
+            valid_dlgs, pending_dlgs = extract_dialogs(dialogs_txt, db_session)
             dialogs_answered += valid_dlgs
             msgs_txt, pending_dlgs = _process_pending_dlgs(pending_dlgs)
             dialogs_not_answered += pending_dlgs
 
     if not finished:
         openai_count += 1
-        dialogs_txt = try_get_completion(get_ana_wx_prompt(msgs_txt), WECHAT_ANA_MODEL)
-        logger.debug(
-            f'get_completion prompt:\n{get_ana_wx_prompt(msgs_txt)}\n result:\n{dialogs_txt}\n')
-        valid_dlgs, pending_dlgs = _exract_dialogs(dialogs_txt, db_session)
+        dialogs_txt = get_dlgwithtype_from_llm(msgs_txt, WECHAT_ANA_MODEL)
+        valid_dlgs, pending_dlgs = extract_dialogs(dialogs_txt, db_session)
         dialogs_answered += valid_dlgs
         dialogs_not_answered += pending_dlgs
 
     for d in dialogs_not_answered:
         logger.info(f"this is a pending dialog {d.uuid}")
-        d.commit_dwd_wx_dialog(db_session)
+        d.commit_dialog(db_session)
+
+    # 处理FAQ
+    for d in dialogs_answered:
+        if d.can_gen_faq():
+            faq_gen = get_faq_from_llm(d.get_faq_material(), WECHAT_ANA_MODEL)
+            d.add_faq_gen(faq_gen)
+            d.commit_dws_dialog_faq(db_session)
 
     # log stats
     msg_count = len(msgs)
@@ -301,10 +358,10 @@ def get_msgs_txt_tmp(
 
 
 def index(
-    db_session: Session,
-    attempt: IndexAttempt,
-    doc_batch_generator: GenerateDocumentsOutput,
-    run_time: float,
+        db_session: Session,
+        attempt: IndexAttempt,
+        doc_batch_generator: GenerateDocumentsOutput,
+        run_time: float,
 ) -> None:
     indexing_pipeline = build_indexing_pipeline()
 
@@ -389,8 +446,8 @@ def index(
 
 
 def run_wechat_indexing(
-    db_session: Session,
-    index_attempt: IndexAttempt,
+        db_session: Session,
+        index_attempt: IndexAttempt,
 ) -> None:
     msgs = preprocess_msgs(db_session, index_attempt)
     # msgs_txt = get_msgs_txt_tmp(msgs)
@@ -399,3 +456,215 @@ def run_wechat_indexing(
     # dialogs = get_dialogs_mock(db_session)
     wx_batch_generator = load_from_dialogs(index_attempt, dialogs)
     index(db_session, index_attempt, wx_batch_generator, time.time())
+
+
+if __name__ == "__main__":
+    dialogs_txt = f'''### 任务一输出：
+
+```
+消息id|消息类型|咨询记录id
+3664|1|1
+3665|0|0
+3666|3|1
+3669|2|1
+3670|4|1
+3671|2|1
+3672|1|2
+3673|3|2
+3674|2|2
+3675|3|2
+3676|2|2
+3677|3|2
+3680|2|2
+3681|4|2
+3683|2|2
+3684|3|2
+3685|2|2
+3686|3|2
+3687|2|2
+3688|2|2
+3689|4|2
+3690|1|3
+3691|2|3
+3692|3|3
+3693|2|3
+3694|4|3
+3695|1|4
+3696|3|4
+3697|3|4
+3698|2|4
+3699|4|4
+3700|2|4
+3701|1|5
+3703|3|5
+3704|4|5
+3705|3|5
+3706|4|5
+3707|2|5
+3709|2|5
+3710|4|5
+3711|3|5
+3712|3|5
+3714|3|5
+3715|3|5
+3716|3|5
+3718|3|5
+3719|2|5
+3720|4|5
+3721|1|6
+3722|4|6
+3723|2|6
+3724|3|6
+3726|3|6
+3727|2|6
+3729|4|6
+3730|2|6
+3731|3|6
+3732|4|6
+3734|2|6
+3735|3|6
+3736|2|6
+3738|4|6
+3739|3|6
+3740|3|6
+3741|4|6
+3742|3|6
+3743|3|6
+3744|2|6
+3745|4|6
+3746|2|6
+3747|4|6
+3748|4|6
+3749|2|6
+3750|3|6
+3751|3|6
+3752|2|6
+3753|4|6
+3754|1|7
+3756|0|0
+3759|1|8
+3760|0|0
+3761|0|0
+3762|3|8
+3763|4|8
+3766|3|8
+3767|3|8
+3770|3|8
+3771|2|8
+3772|3|8
+3773|2|8
+3777|3|8
+3778|2|8
+3779|2|8
+3781|1|9
+3782|2|9
+3784|3|9
+3785|2|9
+3786|0|0
+3787|0|0
+3789|0|0
+3790|3|9
+3791|1|10
+3792|4|10
+3793|2|9
+3794|2|9
+3796|3|9
+3797|2|9
+3798|2|9
+3799|2|9
+3800|2|9
+3802|2|9
+3804|3|9
+3805|3|9
+3807|2|9
+3808|2|9
+3809|3|9
+3810|2|9
+3811|2|9
+3812|2|9
+3814|2|9
+3816|2|9
+3817|3|9
+3818|2|9
+3819|3|9
+3820|2|9
+3821|2|9
+3822|3|9
+3824|3|9
+3825|2|9
+3826|3|9
+3827|3|9
+3828|2|9
+3829|2|9
+3831|3|9
+3833|2|9
+3834|4|9
+3835|0|0
+3836|0|0
+3838|1|11
+3839|0|0
+3840|3|11
+3841|2|11
+3842|1|12
+3844|3|12
+3845|2|12
+3847|0|0
+3848|4|11
+3849|2|11
+3850|1|13
+3852|0|0
+3853|3|13
+3854|2|13
+3855|1|14
+3856|0|0
+3857|3|14
+3859|2|14
+3860|2|14
+3862|1|15
+3863|1|16
+3864|3|16
+3865|2|16
+3866|3|16
+3867|2|16
+3869|2|16
+3870|0|0
+3871|0|0
+3872|4|16
+3873|2|16
+```
+
+### ###
+
+### 任务二输出：
+
+```
+咨询记录id|问题大类|二级分类|版本|问题详情|答案|分类理由
+1|3|6|NULL|创建分区失败，权限问题，fe启动不了|这看起来是你启动Doris的时候对这个目录的赋权问题呀|专家回复指出是权限问题，属于功能缺陷
+2|3|4|2.0|自定义Udf函数bug|私聊细嗦|专家回复提到bug，属于兼容性问题
+3|2|2|NULL|服务不可用，BE所在机器存储满了|恢复了，是be所在机器存储满了|专家回复提到服务不可用，属于监控指标异常
+4|4|9|NULL|实时导入doris的方案|这个没啥问题的|专家回复提到性能调优，属于性能调优咨询
+5|1|1|2.0.2|extenal pg和odbc支持问题|这个已经废弃了|专家回复提到目前不支持，属于产品需求
+6|1|1|2.0.3|kudu数据导入或直查支持问题|2.1了得|专家回复提到将来版本支持，属于产品需求
+7|4|7|NULL|paimon外表类型的bug修复情况|2.0.3版本，paimon外表那个类型的bug应该修复了吧|用户询问是否修复，属于安装部署问题
+8|4|8|NULL|Doris建表字段类型变更问题|string 类型，show create table 或者 desc 的时候显示就是text|专家回复解释了字段类型显示问题，属于使用方法咨询
+9|4|8|NULL|union all无法写入数据问题|原因找到了，我过滤某个int类型字段a!=1,结果把a为null也被过滤掉了|用户自己找到了问题原因，属于使用方法咨询
+10|4|8|NULL|2.1版本上线时间|这个月底应该会发布第一个测试版本|用户询问版本上线时间，属于使用方法咨询
+11|4|8|NULL|Catalog中Oracle的NUMBER(*)类型映射Doris类型支持问题|这个暂时还没有|专家回复提到目前不支持，属于使用方法咨询
+12|4|8|NULL|创建catalog需要root用户权限问题|不是，但是创建之前你需要给这个用户创建这个catalog的权限|专家回复解释了权限问题，属于使用方法咨询
+13|4|7|2.0.1.1|doris自动生成临时表问题|不会，应该是你自己生成的|专家回复否认了系统生成临时表，属于安装部署问题
+14|4|8|NULL|doris的正则匹配exp_extract_all匹配车牌号问题|未提供答案|用户询问正则匹配问题，属于使用方法咨询
+15|4|10|NULL|2.0.3官方docker镜像问题|未提供答案|用户询问docker镜像问题，属于其他咨询
+16|4|8|3.2.0|doris在海豚里执行脚本问题|可以ds群再问问 [旺柴] 2.0到3.1都是mysql数据源即可|专家回复提供了解决方案，属于使用方法咨询
+```'''
+    faq_gen=f'''Q：在使用Apache Doris时遇到了"wait catalog to be ready. FE type: UNKNOWN. is ready: false"的错误，这是什么原因导致的？如何解决？
+A：这个错误通常是因为BE（Backend）所在的机器存储满了导致的。当BE节点的磁盘空间不足时，可能会影响到FE（Frontend）的状态同步和元数据的加载，从而导致这个错误。解决方法是检查BE节点的磁盘空间，并释放或增加空间以确保BE节点能正常工作。一旦BE节点的存储问题解决，FE应该就能正常同步状态，错误信息随之消失。'''
+    engine = get_sqlalchemy_engine()
+    with Session(engine, expire_on_commit=False) as db_session:
+        valid_dlgs, pending_dlgs = extract_dialogs(dialogs_txt, db_session)
+        for d in pending_dlgs:
+            d.commit_dialog(db_session)
+        for d in valid_dlgs:
+            if d.can_gen_faq():
+                d.add_faq_gen(faq_gen)
+                d.commit_dws_dialog_faq(db_session)
+

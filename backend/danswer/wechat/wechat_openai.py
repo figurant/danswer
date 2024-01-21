@@ -3,7 +3,7 @@ import openai
 from danswer.configs.app_configs import LOG_FILE_STORAGE
 from danswer.configs.model_configs import GEN_AI_API_KEY
 from danswer.wechat.file_logger import FileLogger
-from danswer.wechat.prompts import get_ana_wx_prompt2, get_ana_wx_prompt
+from danswer.wechat.prompts import get_ana_wx_prompt2, get_ana_wx_prompt, get_dlgwithtype_prompt, get_faq_prompt
 import threading
 import time
 
@@ -16,14 +16,30 @@ openai.api_key = GEN_AI_API_KEY
 update_logger = FileLogger(f'{LOG_FILE_STORAGE}/openai.log', level='debug')
 
 
-def try_get_completion(prompt, model="gpt-3.5-turbo"):
+def get_dlgwithtype_from_llm(text, model):
+    prompt = get_dlgwithtype_prompt(text)
+    dialogs_txt = try_get_completion(prompt, model)
+    update_logger.debug(
+        f'get_completion prompt:\n{prompt}\n result:\n{dialogs_txt}\n')
+    return dialogs_txt
+
+
+def get_faq_from_llm(text, model):
+    prompt = get_faq_prompt(text)
+    faq_txt = try_get_completion(prompt, model)
+    update_logger.debug(
+        f'get_completion prompt:\n{prompt}\n result:\n{faq_txt}\n')
+    return faq_txt
+
+
+def try_get_completion(prompt, model):
     result = ""
     global lock
     with lock:
         retries = 0
         while retries < MAX_RETRIES:
             try:
-                result = get_completion(prompt, model)
+                result = get_completion_v2(prompt, model)
                 break
             except Exception as e:
                 retries += 1
@@ -38,6 +54,19 @@ def try_get_completion(prompt, model="gpt-3.5-turbo"):
 
 def get_completion(prompt, model="gpt-3.5-turbo"):
     messages = [{"role": "user", "content": prompt}]
+    response = openai.ChatCompletion.create(
+        model=model,
+        messages=messages,
+        temperature=0,  # this is the degree of randomness of the model's output
+    )
+    return response.choices[0].message["content"]
+
+
+def get_completion_v2(prompt, model="gpt-4-1106-preview"):
+    messages = [
+        {"role": "system",
+         "content": "你是Apache Doris资深解决方案架构师，精通OLAP数据库，对Apache Doris的技术原理、功能特性、场景解决方案、最佳实践等方面都非常熟悉。"},
+        {"role": "user", "content": prompt}]
     response = openai.ChatCompletion.create(
         model=model,
         messages=messages,
@@ -243,7 +272,6 @@ if __name__ == "__main__":
 1295|bun|2023-09-13 22:22:00|这个哪里有
 1296|苏奕嘉@SelectDB|2023-09-13 22:32:00|加好友我拉你进内测群
 '''
-
 
     text2 = '''\
 1441|jet|2023-09-13 16:56:00|请问下两千万数据的join为什么这么慢？版本是2.0.1

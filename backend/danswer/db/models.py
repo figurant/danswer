@@ -450,3 +450,24 @@ class DwdWxDialog(Base):
     time_updated: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class DwsDialog(Base):
+    __tablename__ = "dws_dialog"
+
+    dialog_uuid: Mapped[UUID] = mapped_column(Uuid,primary_key=True)
+    dialog_category: Mapped[str] = mapped_column(String)
+    dialog_type: Mapped[str] = mapped_column(String)
+    version: Mapped[str] = mapped_column(String)
+    question: Mapped[str] = mapped_column(Text)
+    answer: Mapped[str] = mapped_column(Text)
+    type_reason: Mapped[str] = mapped_column(Text)
+    faq_gen: Mapped[str] = mapped_column(Text)
+    faq_material: Mapped[str] = mapped_column(Text)
+    is_expert_answered: Mapped[bool] = mapped_column(Boolean)
+    time_created: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    time_updated: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
