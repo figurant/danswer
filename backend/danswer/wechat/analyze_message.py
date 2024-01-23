@@ -36,7 +36,7 @@ logger = update_logger.logger
 
 
 def preprocess_msgs(
-        db_session: Session, attempt: IndexAttempt
+        db_session: Session, file_path: str
 ) -> list[OdsWxMsg]:
     def _one_msg(
             db_session: Session, sender: str, send_time: str, content: str, meta_info: str
@@ -46,7 +46,7 @@ def preprocess_msgs(
             wx_msg = create_wx_msg(sender, send_time, content, meta_info, db_session)
         return wx_msg
 
-    with open(attempt.connector.connector_specific_config['file_locations'][0], 'r', encoding='utf-8') as file:
+    with open(file_path, 'r', encoding='utf-8') as file:
         lines = file.readlines()
 
     msgs = []
@@ -62,7 +62,7 @@ def preprocess_msgs(
         match_obj = re.match(r'(.*) (\d{4}/\d{2}/\d{2} \d{2}:\d{2})', line)
         if match_obj:
             current_msg = _one_msg(db_session, sender, send_time, content,
-                                   attempt.connector.connector_specific_config['file_locations'][0])
+                                   file_path)
             if current_msg:
                 msgs.append(current_msg)
 
@@ -78,7 +78,7 @@ def preprocess_msgs(
             content = content.replace("|", ",")
 
     current_msg = _one_msg(db_session, sender, send_time, content,
-                           attempt.connector.connector_specific_config['file_locations'][0])
+                           file_path)
     if current_msg:
         msgs.append(current_msg)
 
@@ -225,7 +225,7 @@ def extract_dialogs(raw_dialogs_txt: str, db_session: Session) -> (list[Dialog],
 
 
 def get_dialogs(
-        db_session: Session, msgs: list[OdsWxMsg], index_attempt: IndexAttempt
+        db_session: Session, msgs: list[OdsWxMsg], file_path: str
 ) -> list[Dialog]:
     def _process_pending_dlgs(pending_dlgs: list) -> (str, list[Dialog]):
         _msgs_txt = ""
@@ -329,7 +329,7 @@ def get_dialogs(
                 m4 += 1
 
     logger.info(f"successfully get dialogs from file"
-                f"{index_attempt.connector.connector_specific_config['file_locations'][0]}\n"
+                f"{file_path}\n"
                 f"used openai api count {openai_count}, \n"
                 f"messages count {msg_count}, \n"
                 f"dlg_count {dlg_count},\n"
@@ -449,10 +449,12 @@ def run_wechat_indexing(
         db_session: Session,
         index_attempt: IndexAttempt,
 ) -> None:
-    msgs = preprocess_msgs(db_session, index_attempt)
+    msgs = preprocess_msgs(db_session,
+                           index_attempt.connector.connector_specific_config['file_locations'][0])
     # msgs_txt = get_msgs_txt_tmp(msgs)
 
-    dialogs = get_dialogs(db_session, msgs, index_attempt)
+    dialogs = get_dialogs(db_session, msgs,
+                          index_attempt.connector.connector_specific_config['file_locations'][0])
     # dialogs = get_dialogs_mock(db_session)
     wx_batch_generator = load_from_dialogs(index_attempt, dialogs)
     index(db_session, index_attempt, wx_batch_generator, time.time())
