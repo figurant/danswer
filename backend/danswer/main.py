@@ -192,7 +192,7 @@ def get_application() -> FastAPI:
         create_initial_public_credential()
 
         logger.info("Verifying Document Index(s) is/are available.")
-        get_default_document_index().ensure_indices_exist()
+#        get_default_document_index().ensure_indices_exist()
 
     return application
 

@@ -14,12 +14,12 @@ MAX_RETRIES = 3
 
 openai.api_key = GEN_AI_API_KEY
 update_logger = FileLogger(f'{LOG_FILE_STORAGE}/openai.log', level='debug')
-
+logger = update_logger.logger
 
 def get_dlgwithtype_from_llm(text, model):
     prompt = get_dlgwithtype_prompt(text)
     dialogs_txt = try_get_completion(prompt, model)
-    update_logger.debug(
+    logger.debug(
         f'get_completion prompt:\n{prompt}\n result:\n{dialogs_txt}\n')
     return dialogs_txt
 
@@ -27,7 +27,7 @@ def get_dlgwithtype_from_llm(text, model):
 def get_faq_from_llm(text, model):
     prompt = get_faq_prompt(text)
     faq_txt = try_get_completion(prompt, model)
-    update_logger.debug(
+    logger.debug(
         f'get_completion prompt:\n{prompt}\n result:\n{faq_txt}\n')
     return faq_txt
 

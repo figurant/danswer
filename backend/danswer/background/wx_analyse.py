@@ -1,4 +1,12 @@
 import sys
+import os
+
+# 获取当前脚本所在的目录
+current_dir = os.path.dirname(os.path.realpath(__file__))
+
+# 将项目目录添加到Python路径
+project_dir = os.path.join(current_dir, '../..')  # 假设项目目录是当前目录的上一级
+sys.path.append(project_dir)
 
 from sqlalchemy.orm import Session
 
