@@ -16,6 +16,15 @@ openai.api_key = GEN_AI_API_KEY
 update_logger = FileLogger(f'{LOG_FILE_STORAGE}/openai.log', level='debug')
 logger = update_logger.logger
 
+
+def get_dlg_from_llm(text, model):
+    prompt = get_ana_wx_prompt2(text)
+    dialogs_txt = try_get_completion(prompt, model)
+    logger.debug(
+        f'get_completion prompt:\n{prompt}\n result:\n{dialogs_txt}\n')
+    return dialogs_txt
+
+
 def get_dlgwithtype_from_llm(text, model):
     prompt = get_dlgwithtype_prompt(text)
     dialogs_txt = try_get_completion(prompt, model)
@@ -52,7 +61,7 @@ def try_get_completion(prompt, model):
     return result
 
 
-def get_completion(prompt, model="gpt-3.5-turbo"):
+def get_completion(prompt, model):
     messages = [{"role": "user", "content": prompt}]
     response = openai.ChatCompletion.create(
         model=model,
@@ -62,7 +71,7 @@ def get_completion(prompt, model="gpt-3.5-turbo"):
     return response.choices[0].message["content"]
 
 
-def get_completion_v2(prompt, model="gpt-4-1106-preview"):
+def get_completion_v2(prompt, model):
     messages = [
         {"role": "system",
          "content": "你是Apache Doris资深解决方案架构师，精通OLAP数据库，对Apache Doris的技术原理、功能特性、场景解决方案、最佳实践等方面都非常熟悉。"},

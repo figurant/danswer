@@ -90,8 +90,8 @@ API_TYPE_OPENAI = os.environ.get("API_TYPE_OPENAI", "").lower()
 API_VERSION_OPENAI = os.environ.get("API_VERSION_OPENAI", "")
 # Deployment ID used interchangeably with "engine" parameter
 AZURE_DEPLOYMENT_ID = os.environ.get("AZURE_DEPLOYMENT_ID", "")
-WECHAT_ANA_MODEL = os.environ.get("WECHAT_ANA_MODEL", "gpt-4-1106-preview")
+WECHAT_ANA_MODEL = os.environ.get("WECHAT_ANA_MODEL", "gpt-3.5-turbo-1106")
 
 MAX_WECHAT_MESSAGE_LENGTH = 1000
-MAX_WECHAT_CONTEXT = os.environ.get("MAX_WECHAT_CONTEXT", 20000)
+MAX_WECHAT_CONTEXT = os.environ.get("MAX_WECHAT_CONTEXT", 5000)
 MAX_OPENAI_COUNT_PER_FILE = os.environ.get("MAX_OPENAI_COUNT_PER_FILE", 100)

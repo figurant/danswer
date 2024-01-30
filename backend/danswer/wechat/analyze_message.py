@@ -29,7 +29,8 @@ from danswer.wechat.dialog import Dialog, Message
 from danswer.wechat.file_logger import FileLogger
 from danswer.wechat.prompts import get_ana_wx_prompt, MESSAGE_TYPE_EXPERT_ANSWER, MESSAGE_TYPE_USER_QUESTION, \
     MESSAGE_TYPE_USER_ANSWER, MESSAGE_TYPE_EXPERT_QUESTION
-from danswer.wechat.wechat_openai import try_get_completion, get_dlgwithtype_from_llm, get_faq_from_llm
+from danswer.wechat.wechat_openai import try_get_completion, get_dlgwithtype_from_llm, get_faq_from_llm, \
+    get_dlg_from_llm
 
 update_logger = FileLogger(f'{LOG_FILE_STORAGE}/update.log', level='debug')
 logger = update_logger.logger
@@ -154,7 +155,7 @@ def get_dialogs_mock(
 # 1|3|6|NULL|创建分区失败，权限问题，fe启动不了|这看起来是你启动Doris的时候对这个目录的赋权问题呀|专家回复指出是权限问题，属于功能缺陷
 # 2|3|4|2.0|自定义Udf函数bug|私聊细嗦|专家回复提到bug，属于兼容性问题
 # ```
-def extract_dialogs(raw_dialogs_txt: str, db_session: Session) -> (list[Dialog], list[Dialog]):
+def extract_dialogs_withtype(raw_dialogs_txt: str, db_session: Session) -> (list[Dialog], list[Dialog]):
     pending_dlgs = []  # 有提问，待回答的对话消息，需要进行下一轮处理
     valid_dlgs = []
     dlgs_map = {}  # dialog_id->Dialog的map
@@ -224,6 +225,50 @@ def extract_dialogs(raw_dialogs_txt: str, db_session: Session) -> (list[Dialog],
     return valid_dlgs, pending_dlgs
 
 
+# 消息id|消息类型|咨询记录id
+# 3664|1|1
+# 3665|0|0
+def extract_dialogs(raw_dialogs_txt: str, db_session: Session) -> (list[Dialog], list[Dialog]):
+    pending_dlgs = []  # 有提问，待回答的对话消息，需要进行下一轮处理
+    valid_dlgs = []
+    dlgs_map = {}  # dialog_id->Dialog的map
+    lines = raw_dialogs_txt.splitlines()
+    tag_task1 = False
+    lines_cursor = 0
+
+    for i, line in enumerate(lines):
+        line = line.replace(" ", "")
+        match_obj = re.match(r'(\d+)\|(\d+)\|(\d+)', line)
+        if match_obj:
+            msg_id = int(match_obj.group(1).strip())
+            msg_type = int(match_obj.group(2).strip())
+            dialog_id = int(match_obj.group(3).strip())
+            if msg_id > 0 and 0 < msg_type < 5 and dialog_id > 0:
+                ods_wx_msg = get_wx_msg(msg_id, db_session)
+                message = Message(msg_id,
+                                  ods_wx_msg.sender_name,
+                                  ods_wx_msg.send_time,
+                                  ods_wx_msg.msg_content,
+                                  msg_type
+                                  )
+                if dialog_id in dlgs_map:
+                    dlgs_map[dialog_id].add_message(message)
+                    if msg_type == MESSAGE_TYPE_EXPERT_ANSWER:
+                        dlgs_map[dialog_id].set_has_answer()
+                else:
+                    dialog = Dialog(uuid.uuid1(), [message])
+                    dlgs_map[dialog_id] = dialog
+
+    for d in dlgs_map.values():
+        if d.has_answer:
+            valid_dlgs.append(d)
+            d.commit_dialog(db_session)
+        else:
+            pending_dlgs.append(d)
+
+    return valid_dlgs, pending_dlgs
+
+
 def get_dialogs(
         db_session: Session, msgs: list[OdsWxMsg], file_path: str
 ) -> list[Dialog]:
@@ -231,6 +276,7 @@ def get_dialogs(
         _msgs_txt = ""
         dlgs = []
         idx = len(pending_dlgs) - 1
+        pending_dlg_count = 0
         while idx >= 0:
             d = pending_dlgs[idx]
             dlg_txt = ""
@@ -242,6 +288,11 @@ def get_dialogs(
                 break
             _msgs_txt = dlg_txt + _msgs_txt
             idx -= 1
+
+            pending_dlg_count += 1
+            # 最多放5个未回复的问题进去
+            if pending_dlg_count >= 5:
+                break
 
         if idx >= 0:
             dlgs = pending_dlgs[0: idx + 1]
@@ -271,7 +322,7 @@ def get_dialogs(
             if openai_count > MAX_OPENAI_COUNT_PER_FILE:
                 logger.warning(f"openai_count > {MAX_OPENAI_COUNT_PER_FILE}")
                 break
-            dialogs_txt = get_dlgwithtype_from_llm(msgs_txt, WECHAT_ANA_MODEL)
+            dialogs_txt = get_dlg_from_llm(msgs_txt, WECHAT_ANA_MODEL)
 
             valid_dlgs, pending_dlgs = extract_dialogs(dialogs_txt, db_session)
             dialogs_answered += valid_dlgs
@@ -280,7 +331,7 @@ def get_dialogs(
 
     if not finished:
         openai_count += 1
-        dialogs_txt = get_dlgwithtype_from_llm(msgs_txt, WECHAT_ANA_MODEL)
+        dialogs_txt = get_dlg_from_llm(msgs_txt, WECHAT_ANA_MODEL)
         valid_dlgs, pending_dlgs = extract_dialogs(dialogs_txt, db_session)
         dialogs_answered += valid_dlgs
         dialogs_not_answered += pending_dlgs
