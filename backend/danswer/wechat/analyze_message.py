@@ -343,6 +343,7 @@ def get_dialogs(
     # 处理FAQ
     for d in dialogs_answered:
         if d.can_gen_faq():
+            openai_count += 1
             faq_gen = get_faq_from_llm(d.get_faq_material(), WECHAT_ANA_MODEL)
             d.add_faq_gen(faq_gen)
             d.commit_dws_dialog_faq(db_session)

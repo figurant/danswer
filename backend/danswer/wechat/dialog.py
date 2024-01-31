@@ -76,7 +76,10 @@ class Dialog:
         return qa_block
 
     def can_gen_faq(self):
-        return True
+        if len(self.messages) > 4:
+            return True
+        else:
+            return False
         # 对于产品使用咨询和产品需求，可以生成FQA作为知识库测试集。
         # return self.has_answer and (self.dialog_category == 1 or self.dialog_category == 4)
 
