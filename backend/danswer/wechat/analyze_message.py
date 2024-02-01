@@ -233,12 +233,12 @@ def extract_dialogs(raw_dialogs_txt: str, db_session: Session) -> (list[Dialog],
     valid_dlgs = []
     dlgs_map = {}  # dialog_id->Dialog的map
     lines = raw_dialogs_txt.splitlines()
-    tag_task1 = False
-    lines_cursor = 0
 
     for i, line in enumerate(lines):
         line = line.replace(" ", "")
         match_obj = re.match(r'(\d+)\|(\d+)\|(\d+)', line)
+        if not match_obj:
+            match_obj = re.match(r'\|(\d+)\|(\d+)\|(\d+)\|', line)
         if match_obj:
             msg_id = int(match_obj.group(1).strip())
             msg_type = int(match_obj.group(2).strip())
@@ -266,6 +266,11 @@ def extract_dialogs(raw_dialogs_txt: str, db_session: Session) -> (list[Dialog],
         else:
             pending_dlgs.append(d)
 
+    logger.info(f"extract_dialogs from :"
+                f"{raw_dialogs_txt}\n"
+                f"valid_dlgs count {len(valid_dlgs)}, \n"
+                f"pending_dlgs count {len(pending_dlgs)}\n"
+                )
     return valid_dlgs, pending_dlgs
 
 
@@ -311,7 +316,7 @@ def get_dialogs(
         if len(msg_txt) > MAX_WECHAT_MESSAGE_LENGTH:
             logger.warning(
                 f"wechat message exceed max length {len(msg_txt)} > {MAX_WECHAT_MESSAGE_LENGTH}:{msg_txt}")
-            continue
+            msg_txt = msg_txt[:MAX_WECHAT_MESSAGE_LENGTH]
         # msgs取len=MAX_WECHAT_CONTEXT进行处理，处理完加上剩下的组成新的MAX_WECHAT_CONTEXT长度。
         if len(msgs_txt) + len(msg_txt) < MAX_WECHAT_CONTEXT:
             msgs_txt += f"{msg_txt}\n"
