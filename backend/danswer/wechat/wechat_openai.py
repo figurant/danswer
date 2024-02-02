@@ -6,7 +6,7 @@ from danswer.wechat.file_logger import FileLogger
 from danswer.wechat.prompts import get_ana_wx_prompt2, get_ana_wx_prompt, get_dlgwithtype_prompt, get_faq_prompt
 import threading
 import time
-
+import re
 # 创建一个锁
 lock = threading.Lock()
 # 设置最大重试次数
@@ -15,6 +15,28 @@ MAX_RETRIES = 3
 openai.api_key = GEN_AI_API_KEY
 update_logger = FileLogger(f'{LOG_FILE_STORAGE}/openai.log', level='debug')
 logger = update_logger.logger
+
+
+def get_dlg_from_llm_withretry(text, model):
+    max_retry = 3
+    for _ in range(max_retry):
+        if _ > 0:
+            print(f'dialogs_txt format is wrong, do {_} retry')
+        dialogs_txt = get_dlg_from_llm(text, model)
+        # 检查输出格式，如果不对的话重试
+        format_ok = False
+        lines = dialogs_txt.splitlines()
+        for i, line in enumerate(lines):
+            line = line.replace(" ", "")
+            match_obj = re.match(r'(\d+)\|(\d+)\|(\d+)', line)
+            if not match_obj:
+                match_obj = re.match(r'\|(\d+)\|(\d+)\|(\d+)\|', line)
+            if match_obj:
+                format_ok = True
+                break
+        if format_ok:
+            break
+    return dialogs_txt
 
 
 def get_dlg_from_llm(text, model):

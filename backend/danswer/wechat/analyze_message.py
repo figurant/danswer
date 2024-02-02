@@ -30,7 +30,7 @@ from danswer.wechat.file_logger import FileLogger
 from danswer.wechat.prompts import get_ana_wx_prompt, MESSAGE_TYPE_EXPERT_ANSWER, MESSAGE_TYPE_USER_QUESTION, \
     MESSAGE_TYPE_USER_ANSWER, MESSAGE_TYPE_EXPERT_QUESTION
 from danswer.wechat.wechat_openai import try_get_completion, get_dlgwithtype_from_llm, get_faq_from_llm, \
-    get_dlg_from_llm
+    get_dlg_from_llm, get_dlg_from_llm_withretry
 
 update_logger = FileLogger(f'{LOG_FILE_STORAGE}/update.log', level='debug')
 logger = update_logger.logger
@@ -327,7 +327,7 @@ def get_dialogs(
             if openai_count > MAX_OPENAI_COUNT_PER_FILE:
                 logger.warning(f"openai_count > {MAX_OPENAI_COUNT_PER_FILE}")
                 break
-            dialogs_txt = get_dlg_from_llm(msgs_txt, WECHAT_ANA_MODEL)
+            dialogs_txt = get_dlg_from_llm_withretry(msgs_txt, WECHAT_ANA_MODEL)
 
             valid_dlgs, pending_dlgs = extract_dialogs(dialogs_txt, db_session)
             dialogs_answered += valid_dlgs
@@ -336,7 +336,7 @@ def get_dialogs(
 
     if not finished:
         openai_count += 1
-        dialogs_txt = get_dlg_from_llm(msgs_txt, WECHAT_ANA_MODEL)
+        dialogs_txt = get_dlg_from_llm_withretry(msgs_txt, WECHAT_ANA_MODEL)
         valid_dlgs, pending_dlgs = extract_dialogs(dialogs_txt, db_session)
         dialogs_answered += valid_dlgs
         dialogs_not_answered += pending_dlgs
