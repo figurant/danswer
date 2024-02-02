@@ -30,7 +30,7 @@ from danswer.wechat.file_logger import FileLogger
 from danswer.wechat.prompts import get_ana_wx_prompt, MESSAGE_TYPE_EXPERT_ANSWER, MESSAGE_TYPE_USER_QUESTION, \
     MESSAGE_TYPE_USER_ANSWER, MESSAGE_TYPE_EXPERT_QUESTION
 from danswer.wechat.wechat_openai import try_get_completion, get_dlgwithtype_from_llm, get_faq_from_llm, \
-    get_dlg_from_llm, get_dlg_from_llm_withretry
+    get_dlg_from_llm
 
 update_logger = FileLogger(f'{LOG_FILE_STORAGE}/update.log', level='debug')
 logger = update_logger.logger
@@ -245,19 +245,20 @@ def extract_dialogs(raw_dialogs_txt: str, db_session: Session) -> (list[Dialog],
             dialog_id = int(match_obj.group(3).strip())
             if msg_id > 0 and 0 < msg_type < 5 and dialog_id > 0:
                 ods_wx_msg = get_wx_msg(msg_id, db_session)
-                message = Message(msg_id,
-                                  ods_wx_msg.sender_name,
-                                  ods_wx_msg.send_time,
-                                  ods_wx_msg.msg_content,
-                                  msg_type
-                                  )
-                if dialog_id in dlgs_map:
-                    dlgs_map[dialog_id].add_message(message)
-                    if msg_type == MESSAGE_TYPE_EXPERT_ANSWER:
-                        dlgs_map[dialog_id].set_has_answer()
-                else:
-                    dialog = Dialog(uuid.uuid1(), [message])
-                    dlgs_map[dialog_id] = dialog
+                if ods_wx_msg:
+                    message = Message(msg_id,
+                                      ods_wx_msg.sender_name,
+                                      ods_wx_msg.send_time,
+                                      ods_wx_msg.msg_content,
+                                      msg_type
+                                      )
+                    if dialog_id in dlgs_map:
+                        dlgs_map[dialog_id].add_message(message)
+                        if msg_type == MESSAGE_TYPE_EXPERT_ANSWER:
+                            dlgs_map[dialog_id].set_has_answer()
+                    else:
+                        dialog = Dialog(uuid.uuid1(), [message])
+                        dlgs_map[dialog_id] = dialog
 
     for d in dlgs_map.values():
         if d.has_answer:
@@ -327,7 +328,7 @@ def get_dialogs(
             if openai_count > MAX_OPENAI_COUNT_PER_FILE:
                 logger.warning(f"openai_count > {MAX_OPENAI_COUNT_PER_FILE}")
                 break
-            dialogs_txt = get_dlg_from_llm_withretry(msgs_txt, WECHAT_ANA_MODEL)
+            dialogs_txt = get_dlg_from_llm_withretry(msgs_txt, WECHAT_ANA_MODEL, db_session)
 
             valid_dlgs, pending_dlgs = extract_dialogs(dialogs_txt, db_session)
             dialogs_answered += valid_dlgs
@@ -336,7 +337,7 @@ def get_dialogs(
 
     if not finished:
         openai_count += 1
-        dialogs_txt = get_dlg_from_llm_withretry(msgs_txt, WECHAT_ANA_MODEL)
+        dialogs_txt = get_dlg_from_llm_withretry(msgs_txt, WECHAT_ANA_MODEL, db_session)
         valid_dlgs, pending_dlgs = extract_dialogs(dialogs_txt, db_session)
         dialogs_answered += valid_dlgs
         dialogs_not_answered += pending_dlgs
@@ -397,6 +398,34 @@ def get_dialogs(
                 f"EXPERT_QUESTION {m3},\n"
                 f"EXPERT_ANSWER {m4}\n")
     return dialogs_answered
+
+
+def get_dlg_from_llm_withretry(text, model, db_session):
+    max_retry = 3
+    for _ in range(max_retry):
+        if _ > 0:
+            print(f'dialogs_txt format is wrong, do {_} retry')
+        dialogs_txt = get_dlg_from_llm(text, model)
+        # 检查输出格式，如果不对的话重试
+        format_ok = False
+        lines = dialogs_txt.splitlines()
+        for i, line in enumerate(lines):
+            line = line.replace(" ", "")
+            match_obj = re.match(r'(\d+)\|(\d+)\|(\d+)', line)
+            if not match_obj:
+                match_obj = re.match(r'\|(\d+)\|(\d+)\|(\d+)\|', line)
+            if match_obj:
+                msg_id = int(match_obj.group(1).strip())
+                msg_type = int(match_obj.group(2).strip())
+                dialog_id = int(match_obj.group(3).strip())
+                if msg_id > 0 and 0 < msg_type < 5 and dialog_id > 0:
+                    ods_wx_msg = get_wx_msg(msg_id, db_session)
+                    if ods_wx_msg:
+                        format_ok = True
+                        break
+        if format_ok:
+            break
+    return dialogs_txt
 
 
 def get_msgs_txt_tmp(
